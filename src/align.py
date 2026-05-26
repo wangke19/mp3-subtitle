@@ -297,11 +297,15 @@ def align_lyrics(transcript: dict, lyrics_path: str) -> dict:
             matched_chars = char_seq[start_idx:end_idx]
             line_chars = _build_line_chars(line_text, matched_chars)
 
+            # Use actual char timing for start/end (covers prefix extensions)
+            actual_start = line_chars[0]["start"] if line_chars else matched_chars[0]["start"]
+            actual_end = line_chars[-1]["end"] if line_chars else matched_chars[-1]["end"]
+
             result_lines.append({
                 "line_no": line_no,
                 "text": line_text,
-                "start": matched_chars[0]["start"],
-                "end": matched_chars[-1]["end"],
+                "start": actual_start,
+                "end": actual_end,
                 "chars": line_chars,
             })
             search_start = end_idx
