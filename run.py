@@ -34,6 +34,8 @@ def main():
     parser.add_argument("--temp-dir", default=None, help="Temp directory for intermediate files")
     parser.add_argument("--device", default="cpu", help="Compute device (cpu/cuda)")
     parser.add_argument("--compute-type", default="int8", help="Compute type (int8/float16)")
+    parser.add_argument("--offset", type=float, default=0.0, help="Shift subtitles by N seconds (positive=later)")
+    parser.add_argument("--initial-prompt", default=None, help="Initial prompt to guide WhisperX transcription")
     args = parser.parse_args()
 
     if not Path(args.mp3_path).exists():
@@ -52,6 +54,7 @@ def main():
         language=args.language,
         device=args.device,
         compute_type=args.compute_type,
+        initial_prompt=args.initial_prompt,
     )
     Path(transcript_path).write_text(
         json.dumps(transcript, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -77,7 +80,9 @@ def main():
     # Stage 3: Generate ASS
     ass_path = str(Path(temp_dir) / "karaoke.ass")
     print("[3/4] Generating ASS karaoke subtitles...")
-    ass_content = generate_ass(aligned, style_path=args.style)
+    ass_content = generate_ass(aligned, style_path=args.style, offset=args.offset)
+    if args.offset:
+        print(f"  → offset applied: +{args.offset}s")
     Path(ass_path).write_text(ass_content, encoding="utf-8")
     print(f"  → {ass_path}")
 

@@ -44,8 +44,14 @@ def _build_dialogue_line(line: dict, style_name: str) -> str:
     return f"Dialogue: 0,{start_ass},{end_ass},{style_name},,0,0,0,,{text}"
 
 
-def generate_ass(aligned: dict, style_path: str = None) -> str:
-    """Generate complete ASS file content from aligned lyrics data."""
+def generate_ass(aligned: dict, style_path: str = None, offset: float = 0.0) -> str:
+    """Generate complete ASS file content from aligned lyrics data.
+
+    Args:
+        aligned: Dict with 'lines' key from align.py
+        style_path: Path to ASS style preset file.
+        offset: Seconds to shift all subtitles forward (positive = later).
+    """
     if style_path is None:
         style_path = str(Path(__file__).parent.parent / "styles" / "default.ass")
 
@@ -60,7 +66,16 @@ def generate_ass(aligned: dict, style_path: str = None) -> str:
     ]
 
     for line in aligned.get("lines", []):
-        dialogue = _build_dialogue_line(line, style_name)
+        shifted = {
+            **line,
+            "start": line["start"] + offset,
+            "end": line["end"] + offset,
+            "chars": [
+                {**c, "start": c["start"] + offset, "end": c["end"] + offset}
+                for c in line.get("chars", [])
+            ],
+        }
+        dialogue = _build_dialogue_line(shifted, style_name)
         if dialogue:
             parts.append(dialogue + "\n")
 

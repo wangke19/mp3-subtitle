@@ -13,6 +13,7 @@ def transcribe(
     device: str = "cpu",
     compute_type: str = "int8",
     batch_size: int = 8,
+    initial_prompt: str = None,
 ) -> dict:
     """Transcribe audio and return character-level timestamps.
 
@@ -25,9 +26,12 @@ def transcribe(
         device,
         compute_type=compute_type,
         language=language,
-        asr_options={"word_timestamps": True},
+        asr_options={"word_timestamps": True, "condition_on_previous_text": True},
     )
-    result = model.transcribe(audio, batch_size=batch_size, language=language)
+    transcribe_kwargs = dict(audio, batch_size=batch_size, language=language)
+    if initial_prompt:
+        transcribe_kwargs["initial_prompt"] = initial_prompt
+    result = model.transcribe(**transcribe_kwargs)
     del model
 
     model_a, metadata = whisperx.load_align_model(
