@@ -33,6 +33,7 @@ def _find_match_span(lyrics_line: str, char_seq: list[dict], search_start: int) 
 
     Searches progressively forward so lines stay in chronological order.
     Uses a large window to skip intro/watermark segments.
+    Extends match backwards to include unmatched prefix characters.
     """
     if not lyrics_line or not char_seq:
         return None
@@ -56,9 +57,54 @@ def _find_match_span(lyrics_line: str, char_seq: list[dict], search_start: int) 
             end_idx = start_idx + match.size
             matched_chars = char_seq[start_idx:end_idx]
             if matched_chars:
+                # Try to extend backwards to capture unmatched prefix
+                start_idx = _extend_match_backwards(lyrics_line, char_seq, start_idx)
                 return (start_idx, end_idx)
 
     return None
+
+
+def _extend_match_backwards(lyrics_line: str, char_seq: list[dict], match_start: int) -> int:
+    """Try to extend match start backwards to include more of the lyrics line.
+
+    If the matched text only covers the latter part of the lyrics line,
+    check if characters before match_start correspond to the lyrics prefix.
+    Skips spaces in lyrics during matching.
+    """
+    # Find what the match covers in the lyrics
+    matched_text_from = "".join(c["char"] for c in char_seq[match_start:match_start + len(lyrics_line)])
+    sm = SequenceMatcher(None, lyrics_line, matched_text_from)
+    opcodes = sm.get_opcodes()
+
+    # Find the first 'equal' opcode — what part of lyrics is matched
+    first_equal_i1 = len(lyrics_line)
+    for tag, i1, i2, j1, j2 in opcodes:
+        if tag == "equal" and i1 < first_equal_i1:
+            first_equal_i1 = i1
+            break
+
+    if first_equal_i1 == 0:
+        return match_start
+
+    # Build the unmatched prefix, skipping spaces for comparison
+    lyrics_prefix_nospace = lyrics_line[:first_equal_i1].replace(" ", "")
+
+    # Walk backwards through char_seq matching prefix chars
+    best_start = match_start
+    prefix_idx = len(lyrics_prefix_nospace) - 1  # start from end of prefix
+    for back in range(1, min(match_start, len(lyrics_prefix_nospace) * 2) + 1):
+        idx = match_start - back
+        if idx < 0 or prefix_idx < 0:
+            break
+        if char_seq[idx]["char"] == lyrics_prefix_nospace[prefix_idx]:
+            best_start = idx
+            prefix_idx -= 1
+        elif char_seq[idx]["char"] == " ":
+            best_start = idx  # skip spaces in transcript
+        else:
+            break
+
+    return best_start
 
 
 def _build_line_chars(line_text: str, matched_chars: list[dict]) -> list[dict]:
