@@ -19,39 +19,46 @@ def _parse_lyrics(lyrics_path: str) -> list[str]:
     return [line.strip() for line in text.splitlines() if line.strip()]
 
 
-def _find_match_span(lyrics_line: str, char_seq: list[dict], search_start: int) -> tuple[int, int] | None:
-    """Find best matching subsequence for lyrics_line in char_seq starting at search_start.
+def _is_marker_line(text: str, line_no: int, all_lines: list[str]) -> bool:
+    """Check if a lyrics line is a marker (intro, interlude, title) not meant for matching."""
+    stripped = text.strip()
+    # Bracketed markers like [前奏], [间奏]
+    if stripped.startswith("[") and stripped.endswith("]"):
+        return True
+    return False
 
-    Searches the full transcript text (not just a small window) and picks the
-    best match closest to search_start. This handles intro/watermark segments
-    that don't appear in the lyrics.
+
+def _find_match_span(lyrics_line: str, char_seq: list[dict], search_start: int) -> tuple[int, int] | None:
+    """Find best matching subsequence for lyrics_line in char_seq after search_start.
+
+    Searches progressively forward so lines stay in chronological order.
+    Uses a large window to skip intro/watermark segments.
     """
     if not lyrics_line or not char_seq:
         return None
 
     seq_text = "".join(c["char"] for c in char_seq)
+
+    # Search from search_start to end of transcript
+    remaining_text = seq_text[search_start:]
+    if not remaining_text:
+        return None
+
     min_match = max(len(lyrics_line) * 0.4, 2)
 
-    best_match = None
-    best_score = 0
+    sm = SequenceMatcher(None, lyrics_line, remaining_text)
+    matches = sm.get_matching_blocks()
 
-    sm = SequenceMatcher(None, lyrics_line, seq_text)
-    for match in sm.get_matching_blocks():
-        if match.size >= min_match and match.size > best_score:
-            best_score = match.size
-            best_match = match
+    # Pick the first good match (closest to search_start)
+    for match in sorted(matches, key=lambda m: m.b):
+        if match.size >= min_match:
+            start_idx = search_start + match.b
+            end_idx = start_idx + match.size
+            matched_chars = char_seq[start_idx:end_idx]
+            if matched_chars:
+                return (start_idx, end_idx)
 
-    if not best_match:
-        return None
-
-    start_idx = best_match.b
-    end_idx = start_idx + best_match.size
-
-    matched_chars = char_seq[start_idx:end_idx]
-    if not matched_chars:
-        return None
-
-    return (start_idx, end_idx)
+    return None
 
 
 def _build_line_chars(line_text: str, matched_chars: list[dict]) -> list[dict]:
@@ -116,15 +123,71 @@ def _interpolate_chars(text: str, start: float, end: float) -> list[dict]:
     ]
 
 
+def _parse_lyrics_with_header(lyrics_path: str) -> tuple[list[str], list[str]]:
+    """Parse lyrics file, separating header (title + markers) from body.
+
+    Returns (header_lines, body_lines). Header lines are everything before
+    the first real lyrics line (or until we see a bracket marker).
+    """
+    text = Path(lyrics_path).read_text(encoding="utf-8")
+    lines = [line.strip() for line in text.splitlines()]
+    non_empty = [l for l in lines if l]
+
+    if not non_empty:
+        return ([], [])
+
+    # If the first non-empty line is followed by bracket markers or empty lines,
+    # treat it as a header block
+    header_end = 0
+    for i, line in enumerate(non_empty):
+        if line.startswith("[") and line.endswith("]"):
+            header_end = i + 1  # include this marker line in header
+        elif header_end > 0:
+            break  # we've passed the header markers
+
+    # If we found bracket markers, everything before+including them is header
+    if header_end > 0:
+        return (non_empty[:header_end], non_empty[header_end:])
+
+    # No bracket markers found - no header separation
+    return ([], non_empty)
+
+
 def align_lyrics(transcript: dict, lyrics_path: str) -> dict:
     """Align transcript character timestamps to lyrics lines."""
-    lyrics_lines = _parse_lyrics(lyrics_path)
+    header_lines, body_lines = _parse_lyrics_with_header(lyrics_path)
     char_seq = _flatten_chars(transcript)
 
     result_lines = []
     search_start = 0
 
-    for line_no, line_text in enumerate(lyrics_lines, 1):
+    # Add header lines as markers
+    for i, line_text in enumerate(header_lines):
+        result_lines.append({
+            "line_no": i + 1,
+            "text": line_text,
+            "start": 0.0,
+            "end": 0.0,
+            "chars": [],
+            "marker": True,
+        })
+
+    # Match body lines progressively
+    line_no_offset = len(header_lines)
+    for i, line_text in enumerate(body_lines):
+        line_no = line_no_offset + i + 1
+
+        if _is_marker_line(line_text, line_no, body_lines):
+            result_lines.append({
+                "line_no": line_no,
+                "text": line_text,
+                "start": 0.0,
+                "end": 0.0,
+                "chars": [],
+                "marker": True,
+            })
+            continue
+
         span = _find_match_span(line_text, char_seq, search_start)
 
         if span:
@@ -143,11 +206,10 @@ def align_lyrics(transcript: dict, lyrics_path: str) -> dict:
         else:
             start_time = 0.0
             end_time = 0.0
-            if result_lines:
-                start_time = result_lines[-1]["end"] + 0.1
-            elif char_seq:
-                start_time = char_seq[0]["start"]
-
+            for prev in reversed(result_lines):
+                if "marker" not in prev and prev.get("end", 0) > 0:
+                    start_time = prev["end"] + 0.1
+                    break
             if start_time > 0:
                 end_time = start_time + max(len(line_text) * 0.3, 2.0)
 
@@ -159,6 +221,21 @@ def align_lyrics(transcript: dict, lyrics_path: str) -> dict:
                 "chars": _interpolate_chars(line_text, start_time, end_time),
                 "warning": "unmatched",
             })
+
+    # Assign timing to marker lines
+    first_match_start = None
+    for line in result_lines:
+        if "marker" not in line and line.get("start", 0) > 0:
+            first_match_start = line["start"]
+            break
+
+    for line in result_lines:
+        if "marker" in line:
+            if first_match_start and first_match_start > 0:
+                line["start"] = round(max(first_match_start - 5.0, 0.0), 3)
+                line["end"] = round(first_match_start - 0.1, 3)
+                line["chars"] = _interpolate_chars(line["text"], line["start"], line["end"])
+            del line["marker"]
 
     return {"lines": result_lines}
 
