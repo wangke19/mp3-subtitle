@@ -41,8 +41,8 @@ def test_kf_tags_per_char():
     aligned = _make_aligned([_make_line(1, "测试", 1.0, 2.0, chars)])
     result = generate_ass(aligned)
 
-    assert "\\kf50}测" in result
-    assert "\\kf50}试" in result
+    assert "{\\kf50}测" in result
+    assert "{\\kf50}试" in result
 
 
 def test_time_format():

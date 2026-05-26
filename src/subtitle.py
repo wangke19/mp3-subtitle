@@ -38,7 +38,7 @@ def _build_dialogue_line(line: dict, style_name: str) -> str:
         duration_cs = round((c["end"] - c["start"]) * 100)
         if duration_cs < 1:
             duration_cs = 1
-        text_parts.append(f"\\kf{duration_cs}}}{c['char']}")
+        text_parts.append("{\\kf" + str(duration_cs) + "}" + c["char"])
 
     text = "{\\2c&H0000D7FF&}" + "".join(text_parts)
     return f"Dialogue: 0,{start_ass},{end_ass},{style_name},,0,0,0,,{text}"
