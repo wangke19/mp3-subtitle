@@ -69,6 +69,8 @@ def _build_line_chars(line_text: str, matched_chars: list[dict]) -> list[dict]:
             for c in matched_chars
         ]
 
+    # When matched chars cover only part of the line, interpolate missing parts.
+    # Split into: prefix (before match) + matched portion + suffix (after match).
     matched_text = "".join(c["char"] for c in matched_chars)
     sm = SequenceMatcher(None, line_text, matched_text)
 
@@ -92,17 +94,71 @@ def _build_line_chars(line_text: str, matched_chars: list[dict]) -> list[dict]:
                     "end": mc["end"],
                 })
         elif tag == "insert":
-            prev_end = line_chars[-1]["end"] if line_chars else matched_chars[0]["start"]
-            next_start = matched_chars[j1]["start"] if j1 < len(matched_chars) else prev_end + 0.3
-            duration = (next_start - prev_end) / max(i2 - i1, 1)
-            for k in range(i2 - i1):
+            # Lyrics chars not in transcript — interpolate timing
+            n_insert = i2 - i1
+            if line_chars:
+                # After some matched chars — extend from previous end
+                prev_end = line_chars[-1]["end"]
+                next_start = matched_chars[j1]["start"] if j1 < len(matched_chars) else prev_end + n_insert * 0.3
+                if next_start <= prev_end:
+                    next_start = prev_end + n_insert * 0.3
+                duration = (next_start - prev_end) / n_insert
+            elif matched_chars:
+                # Before any matched chars — prepend before first match
+                first_start = matched_chars[0]["start"]
+                duration = 0.3  # 0.3s per char for prefix
+                for k in range(n_insert):
+                    line_chars.append({
+                        "char": line_text[i1 + k],
+                        "start": round(first_start - (n_insert - k) * duration, 3),
+                        "end": round(first_start - (n_insert - k - 1) * duration, 3),
+                    })
+                continue
+            else:
+                duration = 0.3
+            for k in range(n_insert):
                 line_chars.append({
                     "char": line_text[i1 + k],
                     "start": round(prev_end + k * duration, 3),
                     "end": round(prev_end + (k + 1) * duration, 3),
                 })
         elif tag == "delete":
-            pass
+            # Lyrics chars not in matched transcript — interpolate timing
+            n_delete = i2 - i1
+            if matched_chars:
+                if j1 == 0 and not line_chars:
+                    # Prefix: before first matched char — prepend backwards
+                    first_start = matched_chars[0]["start"]
+                    duration = min(0.3, first_start / max(n_delete, 1))
+                    for k in range(n_delete):
+                        line_chars.append({
+                            "char": line_text[i1 + k],
+                            "start": round(first_start - (n_delete - k) * duration, 3),
+                            "end": round(first_start - (n_delete - k - 1) * duration, 3),
+                        })
+                elif j1 < len(matched_chars):
+                    # Middle: between matched chars — split gap evenly
+                    prev_end = line_chars[-1]["end"] if line_chars else matched_chars[max(j1-1, 0)]["end"]
+                    next_start = matched_chars[j1]["start"]
+                    if next_start <= prev_end:
+                        next_start = prev_end + n_delete * 0.3
+                    duration = (next_start - prev_end) / n_delete
+                    for k in range(n_delete):
+                        line_chars.append({
+                            "char": line_text[i1 + k],
+                            "start": round(prev_end + k * duration, 3),
+                            "end": round(prev_end + (k + 1) * duration, 3),
+                        })
+                else:
+                    # Suffix: after last matched char — extend
+                    prev_end = line_chars[-1]["end"] if line_chars else 0
+                    duration = 0.3
+                    for k in range(n_delete):
+                        line_chars.append({
+                            "char": line_text[i1 + k],
+                            "start": round(prev_end + k * duration, 3),
+                            "end": round(prev_end + (k + 1) * duration, 3),
+                        })
 
     return line_chars
 
