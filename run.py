@@ -11,10 +11,12 @@ import sys
 import tempfile
 from pathlib import Path
 
+import whisperx
+
 sys.path.insert(0, str(Path(__file__).parent))
 
-from src.transcribe import transcribe
-from src.align import align_lyrics
+from src.transcribe import load_alignment_model, force_align_lyrics
+from src.align import align_force, align_lyrics, _parse_lyrics_with_header
 from src.subtitle import generate_ass
 from src.render import render
 
@@ -35,7 +37,6 @@ def main():
     parser.add_argument("--device", default="cpu", help="Compute device (cpu/cuda)")
     parser.add_argument("--compute-type", default="int8", help="Compute type (int8/float16)")
     parser.add_argument("--offset", type=float, default=0.0, help="Shift subtitles by N seconds (positive=later)")
-    parser.add_argument("--initial-prompt", default=None, help="Initial prompt to guide WhisperX transcription")
     args = parser.parse_args()
 
     if not Path(args.mp3_path).exists():
@@ -43,51 +44,90 @@ def main():
 
     temp_dir = args.temp_dir or tempfile.mkdtemp(prefix="mp3karaoke-")
     Path(temp_dir).mkdir(parents=True, exist_ok=True)
-    print(f"[1/4] Working directory: {temp_dir}")
 
-    # Stage 1: Transcribe
-    transcript_path = str(Path(temp_dir) / "transcript.json")
-    print(f"[1/4] Transcribing {args.mp3_path} with {args.model}...")
-    transcript = transcribe(
-        args.mp3_path,
-        model_name=args.model,
-        language=args.language,
-        device=args.device,
-        compute_type=args.compute_type,
-        initial_prompt=args.initial_prompt,
-    )
-    Path(transcript_path).write_text(
-        json.dumps(transcript, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-    print(f"  → {len(transcript['segments'])} segments, saved to {transcript_path}")
+    audio = whisperx.load_audio(args.mp3_path)
 
-    # Stage 2: Align lyrics (or skip)
-    aligned_path = str(Path(temp_dir) / "aligned.json")
-    if args.lyrics:
-        if not Path(args.lyrics).exists():
-            parser.error(f"Lyrics file not found: {args.lyrics}")
-        print(f"[2/4] Aligning lyrics from {args.lyrics}...")
-        aligned = align_lyrics(transcript, args.lyrics)
+    if args.lyrics and Path(args.lyrics).exists():
+        _run_force_align_pipeline(args, audio, temp_dir)
     else:
-        print("[2/4] No lyrics provided, using raw transcript as lyrics...")
-        aligned = _transcript_to_aligned(transcript)
+        _run_transcribe_pipeline(args, audio, temp_dir)
 
-    Path(aligned_path).write_text(
-        json.dumps(aligned, ensure_ascii=False, indent=2), encoding="utf-8"
+
+def _run_force_align_pipeline(args, audio, temp_dir):
+    """New pipeline: VAD → force-align lyrics text directly."""
+    print("[1/3] Detecting voice activity and transcribing for VAD boundaries...")
+
+    # Step 1: Run Whisper transcription to get VAD segment boundaries
+    # (We only need rough timing, not the actual text)
+    model = whisperx.load_model(
+        args.model, args.device, compute_type=args.compute_type,
+        language=args.language,
+        asr_options={"word_timestamps": True, "condition_on_previous_text": False},
     )
-    print(f"  → {len(aligned['lines'])} lines, saved to {aligned_path}")
+    result = model.transcribe(audio, batch_size=8, language=args.language)
+    del model
 
-    # Stage 3: Generate ASS
+    vad_segments = [{"start": seg["start"], "end": seg["end"]} for seg in result["segments"]]
+    print(f"  → {len(vad_segments)} VAD segments, {vad_segments[0]['start']:.1f}s - {vad_segments[-1]['end']:.1f}s")
+
+    # Save transcript for debugging
+    transcript_path = str(Path(temp_dir) / "transcript.json")
+    json.dump(result, open(transcript_path, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+
+    # Step 2: Force-align lyrics text directly
+    print("[2/3] Force-aligning lyrics text to audio...")
+    header_lines, body_lines = _parse_lyrics_with_header(args.lyrics)
+
+    align_model, align_metadata = load_alignment_model(
+        language=args.language, device=args.device
+    )
+
+    aligned_lines = force_align_lyrics(
+        audio=audio,
+        lyrics_lines=body_lines,
+        vad_segments=vad_segments,
+        align_model=align_model,
+        align_metadata=align_metadata,
+        device=args.device,
+    )
+    del align_model
+
+    first_audio_time = vad_segments[0]["start"] if vad_segments else 0
+    aligned = align_force(aligned_lines, header_lines, first_audio_time)
+
+    matched = sum(1 for l in aligned["lines"] if "warning" not in l)
+    print(f"  → {len(aligned['lines'])} lines ({matched} aligned, {len(aligned['lines']) - matched} interpolated)")
+
+    aligned_path = str(Path(temp_dir) / "aligned.json")
+    Path(aligned_path).write_text(json.dumps(aligned, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    # Step 3: Generate ASS + render
+    _generate_and_render(args, aligned, temp_dir)
+
+
+def _run_transcribe_pipeline(args, audio, temp_dir):
+    """Legacy pipeline: transcribe → fuzzy match → subtitle (no lyrics file)."""
+    from src.transcribe import transcribe
+    from src.align import align_lyrics as legacy_align
+
+    print("[1/4] Transcribing (no lyrics provided, using raw transcript)...")
+
+    transcript = transcribe(
+        args.mp3_path, model_name=args.model, language=args.language,
+        device=args.device, compute_type=args.compute_type,
+    )
+
+    aligned = _transcript_to_aligned(transcript)
+    _generate_and_render(args, aligned, temp_dir)
+
+
+def _generate_and_render(args, aligned, temp_dir):
+    """Generate ASS subtitles and render final video."""
     ass_path = str(Path(temp_dir) / "karaoke.ass")
-    print("[3/4] Generating ASS karaoke subtitles...")
+    print("[3/3] Generating ASS karaoke subtitles and rendering...")
     ass_content = generate_ass(aligned, style_path=args.style, offset=args.offset)
-    if args.offset:
-        print(f"  → offset applied: +{args.offset}s")
     Path(ass_path).write_text(ass_content, encoding="utf-8")
-    print(f"  → {ass_path}")
 
-    # Stage 4: Render
-    print("[4/4] Rendering video...")
     output = render(
         mp3_path=args.mp3_path,
         ass_path=ass_path,
