@@ -20,29 +20,37 @@ def _parse_lyrics(lyrics_path: str) -> list[str]:
 
 
 def _find_match_span(lyrics_line: str, char_seq: list[dict], search_start: int) -> tuple[int, int] | None:
-    """Find best matching subsequence for lyrics_line in char_seq starting at search_start."""
+    """Find best matching subsequence for lyrics_line in char_seq starting at search_start.
+
+    Searches the full transcript text (not just a small window) and picks the
+    best match closest to search_start. This handles intro/watermark segments
+    that don't appear in the lyrics.
+    """
     if not lyrics_line or not char_seq:
         return None
 
     seq_text = "".join(c["char"] for c in char_seq)
+    min_match = max(len(lyrics_line) * 0.4, 2)
 
-    window_size = max(len(lyrics_line) * 3, 20)
-    search_from = max(0, search_start - 5)
-    search_to = min(len(seq_text), search_start + window_size)
-    window_text = seq_text[search_from:search_to]
+    best_match = None
+    best_score = 0
 
-    sm = SequenceMatcher(None, lyrics_line, window_text)
-    match = sm.find_longest_match(0, len(lyrics_line), 0, len(window_text))
+    sm = SequenceMatcher(None, lyrics_line, seq_text)
+    for match in sm.get_matching_blocks():
+        if match.size >= min_match and match.size > best_score:
+            best_score = match.size
+            best_match = match
 
-    if match.size < len(lyrics_line) * 0.5:
+    if not best_match:
         return None
 
-    matched_chars = char_seq[search_from + match.b: search_from + match.b + match.size]
+    start_idx = best_match.b
+    end_idx = start_idx + best_match.size
+
+    matched_chars = char_seq[start_idx:end_idx]
     if not matched_chars:
         return None
 
-    start_idx = search_from + match.b
-    end_idx = start_idx + match.size
     return (start_idx, end_idx)
 
 

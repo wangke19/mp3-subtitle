@@ -21,17 +21,18 @@ def transcribe(
     """
     audio = whisperx.load_audio(mp3_path)
 
+    asr_opts = {"word_timestamps": True, "condition_on_previous_text": True}
+    if initial_prompt:
+        asr_opts["initial_prompt"] = initial_prompt
+
     model = whisperx.load_model(
         model_name,
         device,
         compute_type=compute_type,
         language=language,
-        asr_options={"word_timestamps": True, "condition_on_previous_text": True},
+        asr_options=asr_opts,
     )
-    transcribe_kwargs = dict(audio, batch_size=batch_size, language=language)
-    if initial_prompt:
-        transcribe_kwargs["initial_prompt"] = initial_prompt
-    result = model.transcribe(**transcribe_kwargs)
+    result = model.transcribe(audio, batch_size=batch_size, language=language)
     del model
 
     model_a, metadata = whisperx.load_align_model(
