@@ -1,6 +1,7 @@
 """WhisperX transcription and forced alignment for Chinese audio."""
 
 import json
+from difflib import SequenceMatcher
 from pathlib import Path
 
 import whisperx
@@ -81,24 +82,56 @@ def load_alignment_model(
     return whisperx.load_align_model(language_code=language, device=device)
 
 
+def _match_segment(line_text: str, transcript_segments: list[dict]) -> int:
+    """Find the best matching transcript segment for a lyrics line.
+
+    Matches using the end portion of the lyrics line (last half), because:
+    - A lyrics line can span across transcript segments
+    - The end of the line determines where the next line starts
+    - Using the end portion ensures we pick the segment that covers
+      the latter part of the line for correct window_end estimation.
+
+    Uses "coverage" metric: fraction of lyrics chars found in the segment,
+    which works better than SequenceMatcher.ratio() for short-vs-long text.
+    """
+    end_portion = line_text[len(line_text) // 2:]
+    if not end_portion:
+        return 0
+
+    best_idx = 0
+    best_score = 0.0
+    for i, seg in enumerate(transcript_segments):
+        seg_text = seg.get("text", "")
+        if not seg_text:
+            continue
+        sm = SequenceMatcher(None, end_portion, seg_text)
+        coverage = sum(m.size for m in sm.get_matching_blocks()) / len(end_portion)
+        if coverage > best_score:
+            best_score = coverage
+            best_idx = i
+    return best_idx
+
+
 def force_align_lyrics(
     audio: np.ndarray,
     lyrics_lines: list[str],
-    vad_segments: list[dict],
+    transcript_segments: list[dict],
     align_model,
     align_metadata: dict,
     device: str = "cpu",
 ) -> list[dict]:
     """Force-align lyrics text directly to audio using wav2vec2.
 
-    This bypasses transcription text matching entirely — we pass the CORRECT
-    lyrics text to the aligner and get precise character timestamps.
+    Two-phase approach:
+    1. Text matching: assign each lyrics line to the best transcript segment
+       (handles cases where one long segment covers multiple lines)
+    2. Force alignment: use prev_end for window_start, assigned segment's
+       end for window_end — ensures continuity and correct segment boundaries
 
     Args:
         audio: numpy audio array from whisperx.load_audio()
         lyrics_lines: list of lyrics text lines (without markers)
-        vad_segments: rough time boundaries from transcription,
-                      list of {"start": float, "end": float}
+        transcript_segments: WhisperX transcript segments with 'text', 'start', 'end'
         align_model: loaded wav2vec2 model from load_alignment_model()
         align_metadata: metadata from load_alignment_model()
         device: "cpu" or "cuda"
@@ -107,92 +140,172 @@ def force_align_lyrics(
         list of {"text": str, "start": float, "end": float,
                  "chars": [{"char": str, "start": float, "end": float}]}
     """
-    n_lines = len(lyrics_lines)
-    n_segs = len(vad_segments)
-    results = []
-
-    # Map each lyrics line to a rough time window using VAD segments
-    # Simple strategy: distribute lyrics lines proportionally across VAD segments
-    # based on text length
-    total_text_len = sum(len(l) for l in lyrics_lines)
-    if total_text_len == 0:
+    if not lyrics_lines:
         return []
 
-    total_audio_dur = vad_segments[-1]["end"] - vad_segments[0]["start"] if vad_segments else 0
-    line_start = vad_segments[0]["start"] if vad_segments else 0
+    # Skip short segments that are likely watermarks/noise
+    start_seg = 0
+    for i, seg in enumerate(transcript_segments):
+        duration = float(seg["end"]) - float(seg["start"])
+        text = seg.get("text", "").strip()
+        if duration > 8.0 and len(text) > 5:
+            start_seg = i
+            break
 
-    for i, line_text in enumerate(lyrics_lines):
-        # Estimate duration proportional to text length
-        line_ratio = len(line_text) / total_text_len if total_text_len > 0 else 1 / n_lines
-        line_dur = total_audio_dur * line_ratio
-        line_end = line_start + line_dur
+    # Phase 1: compute match quality for each line
+    line_quality = []
+    for line_text in lyrics_lines:
+        end_portion = line_text[len(line_text) // 2:]
+        if not end_portion:
+            line_quality.append(0.0)
+            continue
+        best_cov = 0.0
+        for seg in transcript_segments:
+            sm = SequenceMatcher(None, end_portion, seg.get("text", ""))
+            cov = sum(m.size for m in sm.get_matching_blocks()) / len(end_portion)
+            best_cov = max(best_cov, cov)
+        line_quality.append(best_cov)
 
-        # Create a fake segment with the correct lyrics text
-        segment = {
-            "start": line_start,
-            "end": line_end,
-            "text": line_text,
-        }
+    # Phase 2: force-align, handling transcript gaps with proportional distribution
+    prev_end = float(transcript_segments[start_seg]["start"])
+    results = []
+    i = 0
 
-        # Run forced alignment on this single segment
-        try:
-            aligned = whisperx.align(
-                [segment],
-                align_model,
-                align_metadata,
-                audio,
-                device,
-                return_char_alignments=True,
-            )
+    while i < len(lyrics_lines):
+        line_text = lyrics_lines[i]
+        if not line_text:
+            i += 1
+            continue
 
-            chars = []
-            seg = aligned["segments"][0] if aligned["segments"] else None
+        if line_quality[i] >= 0.2:
+            # Well-matched line — force align normally
+            seg_idx = _match_segment(line_text, transcript_segments)
+            seg_idx = max(seg_idx, start_seg)
+            seg = transcript_segments[seg_idx]
 
-            if seg:
-                # Try chars first (return_char_alignments=True), then words
-                raw_items = seg.get("chars", []) or seg.get("words", [])
-                for item in raw_items:
-                    start_val = item.get("start")
-                    end_val = item.get("end")
-                    if start_val is not None and end_val is not None:
-                        char_text = item.get("char", item.get("word", ""))
-                        chars.append({
-                            "char": char_text,
-                            "start": round(float(start_val), 3),
-                            "end": round(float(end_val), 3),
-                        })
+            window_start = prev_end + 0.05
+            window_end = float(seg["end"]) + 1.0
 
-            if chars:
-                results.append({
-                    "text": line_text,
-                    "start": chars[0]["start"],
-                    "end": chars[-1]["end"],
-                    "chars": chars,
-                })
-                # Next line starts where this one ends
-                line_start = chars[-1]["end"] + 0.05
+            est_dur = max(len(line_text) * 0.35, 3.0)
+            if window_end - window_start < 2.0:
+                window_end = window_start + max(est_dur, 3.0)
+
+            result = _align_one(audio, line_text, window_start, window_end,
+                                align_model, align_metadata, device)
+            results.append(result)
+            prev_end = result["end"]
+            i += 1
+        else:
+            # Poor match — collect consecutive gap lines
+            gap_start_idx = i
+            while i < len(lyrics_lines) and line_quality[i] < 0.2:
+                i += 1
+            gap_end_idx = i  # first well-matched line after the gap
+
+            # Find the ceiling: start time of the next well-matched line's segment
+            if gap_end_idx < len(lyrics_lines):
+                ceiling_seg = _match_segment(lyrics_lines[gap_end_idx], transcript_segments)
+                ceiling_seg = max(ceiling_seg, start_seg)
+                ceiling_time = float(transcript_segments[ceiling_seg]["start"])
             else:
-                # Alignment failed — use interpolated timing
+                ceiling_time = prev_end + sum(
+                    max(len(lyrics_lines[k]) * 0.35, 3.0)
+                    for k in range(gap_start_idx, gap_end_idx)
+                ) + 2.0
+
+            # Distribute gap lines proportionally between prev_end and ceiling_time
+            available = ceiling_time - prev_end - 0.5  # buffer before ceiling
+            total_len = sum(len(lyrics_lines[k]) for k in range(gap_start_idx, gap_end_idx))
+            if total_len == 0:
+                total_len = 1
+
+            gap_prev = prev_end
+            for k in range(gap_start_idx, gap_end_idx):
+                lt = lyrics_lines[k]
+                share = (len(lt) / total_len) * available
+                line_start = gap_prev + 0.3
+                line_end = line_start + share - 0.3
+
                 results.append({
-                    "text": line_text,
+                    "text": lt,
                     "start": round(line_start, 3),
                     "end": round(line_end, 3),
-                    "chars": _interpolate(line_text, line_start, line_end),
-                    "warning": "alignment_failed",
+                    "chars": _interpolate(lt, line_start, line_end),
+                    "warning": "transcript_gap",
                 })
-                line_start = line_end + 0.05
+                gap_prev = line_end
 
-        except Exception as e:
-            results.append({
-                "text": line_text,
-                "start": round(line_start, 3),
-                "end": round(line_end, 3),
-                "chars": _interpolate(line_text, line_start, line_end),
-                "warning": f"alignment_error: {e}",
-            })
-            line_start = line_end + 0.05
+            prev_end = gap_prev
 
     return results
+
+
+def _align_one(
+    audio: np.ndarray,
+    line_text: str,
+    window_start: float,
+    window_end: float,
+    align_model,
+    align_metadata: dict,
+    device: str,
+) -> dict:
+    """Force-align a single lyrics line within the given time window."""
+    segment = {
+        "start": window_start,
+        "end": window_end,
+        "text": line_text,
+    }
+
+    try:
+        aligned = whisperx.align(
+            [segment],
+            align_model,
+            align_metadata,
+            audio,
+            device,
+            return_char_alignments=True,
+        )
+
+        chars = []
+        seg_data = aligned["segments"][0] if aligned["segments"] else None
+
+        if seg_data:
+            raw_items = seg_data.get("chars", []) or seg_data.get("words", [])
+            for item in raw_items:
+                start_val = item.get("start")
+                end_val = item.get("end")
+                if start_val is not None and end_val is not None:
+                    char_text = item.get("char", item.get("word", ""))
+                    chars.append({
+                        "char": char_text,
+                        "start": round(float(start_val), 3),
+                        "end": round(float(end_val), 3),
+                    })
+
+        if chars:
+            return {
+                "text": line_text,
+                "start": chars[0]["start"],
+                "end": chars[-1]["end"],
+                "chars": chars,
+            }
+        else:
+            return {
+                "text": line_text,
+                "start": round(window_start, 3),
+                "end": round(window_end, 3),
+                "chars": _interpolate(line_text, window_start, window_end),
+                "warning": "alignment_failed",
+            }
+
+    except Exception as e:
+        return {
+            "text": line_text,
+            "start": round(window_start, 3),
+            "end": round(window_end, 3),
+            "chars": _interpolate(line_text, window_start, window_end),
+            "warning": f"alignment_error: {e}",
+        }
 
 
 def _interpolate(text: str, start: float, end: float) -> list[dict]:

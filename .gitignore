@@ -7,3 +7,12 @@ temp/
 *.wav
 output/
 .remember/
+build/
+material/
+imgs/
+*.jpg
+*.png
+*.gif
+*.txt
+!requirements.txt
+*-wechat.html

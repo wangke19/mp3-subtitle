@@ -28,12 +28,13 @@ def main():
     )
     parser.add_argument("mp3_path", help="Path to input MP3 file")
     parser.add_argument("--cover", default=None, help="Path to cover image (JPG/PNG)")
-    parser.add_argument("--lyrics", default=None, help="Path to lyrics text file")
-    parser.add_argument("--output", default="output.mp4", help="Output MP4 path")
+    parser.add_argument("--bg-images", nargs="+", default=None,
+                        help="Background: GIF file or multiple images for slideshow")
+    parser.add_argument("--lyrics", default=None, help="Path to lyrics text file (default: material/{mp3_name}/{mp3_name}.txt)")
+    parser.add_argument("--output", default=None, help="Output MP4 path (default: build/{mp3_name}.mp4)")
     parser.add_argument("--model", default="large-v3", help="Whisper model name")
     parser.add_argument("--language", default="zh", help="Language code")
     parser.add_argument("--style", default=None, help="ASS style preset file path")
-    parser.add_argument("--temp-dir", default=None, help="Temp directory for intermediate files")
     parser.add_argument("--device", default="cpu", help="Compute device (cpu/cuda)")
     parser.add_argument("--compute-type", default="int8", help="Compute type (int8/float16)")
     parser.add_argument("--offset", type=float, default=0.0, help="Shift subtitles by N seconds (positive=later)")
@@ -42,23 +43,35 @@ def main():
     if not Path(args.mp3_path).exists():
         parser.error(f"MP3 file not found: {args.mp3_path}")
 
-    temp_dir = args.temp_dir or tempfile.mkdtemp(prefix="mp3karaoke-")
-    Path(temp_dir).mkdir(parents=True, exist_ok=True)
+    mp3_stem = Path(args.mp3_path).stem
+
+    # Default lyrics: material/{mp3_name}/{mp3_name}.txt
+    if args.lyrics is None:
+        default_lyrics = Path("material") / mp3_stem / f"{mp3_stem}.txt"
+        if default_lyrics.exists():
+            args.lyrics = str(default_lyrics)
+
+    # Intermediate files go to material/{mp3_name}/
+    material_dir = Path("material") / mp3_stem
+    material_dir.mkdir(parents=True, exist_ok=True)
+
+    # Output video goes to build/{mp3_name}.mp4
+    if args.output is None:
+        Path("build").mkdir(exist_ok=True)
+        args.output = str(Path("build") / f"{mp3_stem}.mp4")
 
     audio = whisperx.load_audio(args.mp3_path)
 
     if args.lyrics and Path(args.lyrics).exists():
-        _run_force_align_pipeline(args, audio, temp_dir)
+        _run_force_align_pipeline(args, audio, str(material_dir))
     else:
-        _run_transcribe_pipeline(args, audio, temp_dir)
+        _run_transcribe_pipeline(args, audio, str(material_dir))
 
 
 def _run_force_align_pipeline(args, audio, temp_dir):
-    """New pipeline: VAD → force-align lyrics text directly."""
-    print("[1/3] Detecting voice activity and transcribing for VAD boundaries...")
+    """New pipeline: transcribe → text-match → force-align lyrics."""
+    print("[1/3] Transcribing audio for segment boundaries...")
 
-    # Step 1: Run Whisper transcription to get VAD segment boundaries
-    # (We only need rough timing, not the actual text)
     model = whisperx.load_model(
         args.model, args.device, compute_type=args.compute_type,
         language=args.language,
@@ -67,14 +80,19 @@ def _run_force_align_pipeline(args, audio, temp_dir):
     result = model.transcribe(audio, batch_size=8, language=args.language)
     del model
 
-    vad_segments = [{"start": seg["start"], "end": seg["end"]} for seg in result["segments"]]
-    print(f"  → {len(vad_segments)} VAD segments, {vad_segments[0]['start']:.1f}s - {vad_segments[-1]['end']:.1f}s")
+    # Build transcript segments with text for matching
+    transcript_segments = [
+        {"start": seg["start"], "end": seg["end"], "text": seg["text"].strip()}
+        for seg in result["segments"]
+    ]
+    print(f"  → {len(transcript_segments)} segments, "
+          f"{transcript_segments[0]['start']:.1f}s - {transcript_segments[-1]['end']:.1f}s")
 
     # Save transcript for debugging
     transcript_path = str(Path(temp_dir) / "transcript.json")
     json.dump(result, open(transcript_path, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
 
-    # Step 2: Force-align lyrics text directly
+    # Step 2: Force-align lyrics text using transcript-matched time windows
     print("[2/3] Force-aligning lyrics text to audio...")
     header_lines, body_lines = _parse_lyrics_with_header(args.lyrics)
 
@@ -85,14 +103,14 @@ def _run_force_align_pipeline(args, audio, temp_dir):
     aligned_lines = force_align_lyrics(
         audio=audio,
         lyrics_lines=body_lines,
-        vad_segments=vad_segments,
+        transcript_segments=transcript_segments,
         align_model=align_model,
         align_metadata=align_metadata,
         device=args.device,
     )
     del align_model
 
-    first_audio_time = vad_segments[0]["start"] if vad_segments else 0
+    first_audio_time = transcript_segments[0]["start"] if transcript_segments else 0
     aligned = align_force(aligned_lines, header_lines, first_audio_time)
 
     matched = sum(1 for l in aligned["lines"] if "warning" not in l)
@@ -134,6 +152,7 @@ def _generate_and_render(args, aligned, temp_dir):
         output_path=args.output,
         cover_path=args.cover,
         temp_dir=temp_dir,
+        bg_images=args.bg_images,
     )
     print(f"Done! Video saved to {output}")
 
