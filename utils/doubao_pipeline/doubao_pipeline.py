@@ -60,28 +60,42 @@ def check_dependencies():
 
 
 def remove_watermark(input_path: str, output_path: str) -> bool:
-    """调用 GeminiWatermarkTool 去除水印"""
-    cli_path = os.path.join(GEMINI_TOOL_PATH, "cli.py")
-    
-    if not os.path.exists(cli_path):
-        # fallback: 尝试直接从 pip 安装的版本
-        try:
-            result = subprocess.run(
-                ["gemini-watermark-tool", "--input", input_path, "--output", output_path],
-                capture_output=True, text=True, timeout=30
-            )
-            return result.returncode == 0
-        except:
-            pass
-        
-        logger.error(f"未找到 GeminiWatermarkTool: {cli_path}")
-        return False
-    
+    """使用 FFmpeg delogo 滤镜去除豆包水印（右下角）"""
     try:
-        result = subprocess.run(
-            ["python3", cli_path, "--input", input_path, "--output", output_path, "--mode", "auto"],
-            capture_output=True, text=True, timeout=30
+        # 获取图片尺寸
+        probe = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-print_format", "json",
+             "-show_format", "-show_streams", input_path],
+            capture_output=True, text=True, timeout=10
         )
+        if probe.returncode == 0:
+            import json
+            info = json.loads(probe.stdout)
+            width = int(info['streams'][0]['width'])
+            height = int(info['streams'][0]['height'])
+
+            # 豆包水印通常在右下角，覆盖约 10% 的底部区域
+            watermark_w = int(width * 0.15)
+            watermark_h = int(height * 0.08)
+            x = width - watermark_w - 10
+            y = height - watermark_h - 10
+            w = watermark_w
+            h = watermark_h
+
+            logger.info(f"检测到水印位置: 右下角 ({x},{y} 大小 {w}x{h})")
+        else:
+            # 默认值 (适用于 2048x2048)
+            x, y, w, h = 1800, 1800, 200, 200
+            logger.warning("无法获取图片尺寸，使用默认水印位置")
+
+        # 使用 delogo 滤镜去除水印
+        cmd = [
+            "ffmpeg", "-y", "-i", input_path,
+            "-vf", f"delogo=x={x}:y={y}:w={w}:h={h}:show=0",
+            "-q:v", "2",
+            output_path
+        ]
+        result = subprocess.run(cmd, capture_output=True, timeout=30)
         return result.returncode == 0
     except subprocess.TimeoutExpired:
         logger.error(f"去水印超时: {input_path}")
