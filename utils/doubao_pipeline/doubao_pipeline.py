@@ -60,7 +60,7 @@ def check_dependencies():
 
 
 def remove_watermark(input_path: str, output_path: str) -> bool:
-    """使用覆盖层去除豆包水印（底部文字区域）"""
+    """使用黑色覆盖去除豆包水印"""
     try:
         # 获取图片尺寸
         probe = subprocess.run(
@@ -75,33 +75,24 @@ def remove_watermark(input_path: str, output_path: str) -> bool:
             height = int(info['streams'][0]['height'])
 
             # 豆包水印在底部中间区域
-            watermark_w = int(width * 0.30)
-            watermark_h = int(height * 0.05)
+            watermark_w = int(width * 0.35)
+            watermark_h = int(height * 0.06)
             x = int((width - watermark_w) / 2)  # 居中
-            y = height - watermark_h - 15
+            y = height - watermark_h - 10
 
             logger.info(f"覆盖水印区域: ({x},{y} 大小 {watermark_w}x{watermark_h})")
         else:
             # 默认值 (适用于 2048x2048)
             width, height = 2048, 2048
-            watermark_w, watermark_h = 600, 100
+            watermark_w, watermark_h = 700, 120
             x = int((width - watermark_w) / 2)
-            y = height - watermark_h - 15
+            y = height - watermark_h - 10
             logger.warning("无法获取图片尺寸，使用默认水印位置")
 
-        # 只在水印区域应用模糊，使用crop-blur-overlay链
-        # 1. 裁剪出水印区域
-        # 2. 对该区域模糊
-        # 3. 叠加回原图
-        filter_complex = (
-            f"[0:v]crop={watermark_w}:{watermark_h}:{x}:{y}[wm],"
-            f"[wm]boxblur=15:2[blurred],"
-            f"[0:v][blurred]overlay={x}:{y}"
-        )
-
+        # 直接用黑色矩形覆盖水印区域
         cmd = [
             "ffmpeg", "-y", "-i", input_path,
-            "-filter_complex", filter_complex,
+            "-vf", f"drawbox=x={x}:y={y}:w={watermark_w}:h={watermark_h}:color=black:t=fill",
             "-q:v", "2",
             output_path
         ]
