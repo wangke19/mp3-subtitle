@@ -170,7 +170,7 @@ def process_single(image_path: str, input_dir: str, output_dir: str, filter_name
     return result
 
 
-def batch_process(input_dir: str, output_dir: str = None) -> dict:
+def batch_process(input_dir: str, output_dir: str = None, filter_name: str = DEFAULT_FILTER) -> dict:
     """批量处理目录"""
     input_dir = Path(input_dir)
     output_dir = Path(output_dir) if output_dir else input_dir
@@ -195,7 +195,7 @@ def batch_process(input_dir: str, output_dir: str = None) -> dict:
     
     with ProcessPoolExecutor(max_workers=MAX_WORKERS) as executor:
         futures = {
-            executor.submit(process_single, str(f), str(input_dir), str(output_dir)): f
+            executor.submit(process_single, str(f), str(input_dir), str(output_dir), filter_name): f
             for f in image_files
         }
         
@@ -231,22 +231,45 @@ def batch_process(input_dir: str, output_dir: str = None) -> dict:
 
 
 def main():
-    if len(sys.argv) < 2:
-        print("用法: python3 doubao_pipeline.py <输入目录> [输出目录]")
-        print("示例: python3 doubao_pipeline.py ~/doubao_pipeline/input ~/doubao_pipeline/output")
-        sys.exit(1)
-    
-    input_dir = sys.argv[1]
-    output_dir = sys.argv[2] if len(sys.argv) > 2 else None
-    
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description='豆包图片去水印 + 调色流水线',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+示例:
+  %(prog)s ~/doubao_pipeline/input
+  %(prog)s ~/doubao_pipeline/input ~/doubao_pipeline/output --filter smooth
+  %(prog)s ~/doubao_pipeline/input ~/doubao_pipeline/output --filter film
+        """
+    )
+
+    parser.add_argument('input_dir', help='输入图片目录')
+    parser.add_argument('output_dir', nargs='?', help='输出目录 (默认: 输入目录)')
+    parser.add_argument(
+        '--filter',
+        choices=list(FILTERS.keys()),
+        default=DEFAULT_FILTER,
+        help=f'调色滤镜 (默认: {DEFAULT_FILTER})'
+    )
+
+    args = parser.parse_args()
+
+    input_dir = args.input_dir
+    output_dir = args.output_dir
+    filter_name = args.filter
+
     if not check_dependencies():
         sys.exit(1)
-    
+
     if not os.path.isdir(input_dir):
         logger.error(f"目录不存在: {input_dir}")
         sys.exit(1)
-    
-    batch_process(input_dir, output_dir)
+
+    # Log the selected filter
+    logger.info(f"使用滤镜: {filter_name}")
+
+    batch_process(input_dir, output_dir, filter_name)
 
 
 if __name__ == "__main__":
