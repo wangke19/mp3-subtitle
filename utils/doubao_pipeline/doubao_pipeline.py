@@ -100,6 +100,7 @@ def apply_color_grade(input_path: str, output_path: str, filter_name: str = DEFA
         filter_name: Filter name from FILTERS dict (default: basic)
     """
     filter_str = FILTERS.get(filter_name, FILTERS[DEFAULT_FILTER])
+    logger.info(f"应用滤镜: {filter_name} ({filter_str})")
 
     try:
         cmd = [
