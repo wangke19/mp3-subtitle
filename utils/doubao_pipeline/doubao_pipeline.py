@@ -119,7 +119,7 @@ def apply_color_grade(input_path: str, output_path: str, filter_name: str = DEFA
         return False
 
 
-def process_single(image_path: str, input_dir: str, output_dir: str, filter_name: str = DEFAULT_FILTER) -> dict:
+def process_single(image_path: str, input_dir: str, output_dir: str, filter_name: str = DEFAULT_FILTER, skip_watermark: bool = False) -> dict:
     """处理单张图片：去水印 → 调色
 
     Args:
@@ -127,6 +127,7 @@ def process_single(image_path: str, input_dir: str, output_dir: str, filter_name
         input_dir: Input directory path
         output_dir: Output directory path
         filter_name: Filter name to apply (default: basic)
+        skip_watermark: Skip watermark removal step
     """
     filename = Path(image_path).name
     stem = Path(image_path).stem
@@ -147,13 +148,19 @@ def process_single(image_path: str, input_dir: str, output_dir: str, filter_name
     }
     
     try:
-        # Step 1: 去水印
-        if not remove_watermark(image_path, temp_wm):
-            raise Exception("去水印失败")
-        result["watermark_removed"] = True
-        
+        # 确定输入文件（原图或去水印后的图）
+        input_for_color = image_path if skip_watermark else temp_wm
+
+        # Step 1: 去水印（如果未跳过）
+        if not skip_watermark:
+            if not remove_watermark(image_path, temp_wm):
+                raise Exception("去水印失败")
+            result["watermark_removed"] = True
+        else:
+            result["watermark_removed"] = None  # 跳过
+
         # Step 2: 调色
-        if not apply_color_grade(temp_wm, final_path, filter_name):
+        if not apply_color_grade(input_for_color, final_path, filter_name):
             raise Exception("调色失败")
         result["color_graded"] = True
         
@@ -171,7 +178,7 @@ def process_single(image_path: str, input_dir: str, output_dir: str, filter_name
     return result
 
 
-def batch_process(input_dir: str, output_dir: str = None, filter_name: str = DEFAULT_FILTER) -> dict:
+def batch_process(input_dir: str, output_dir: str = None, filter_name: str = DEFAULT_FILTER, skip_watermark: bool = False) -> dict:
     """批量处理目录"""
     input_dir = Path(input_dir)
     output_dir = Path(output_dir) if output_dir else input_dir
@@ -196,7 +203,7 @@ def batch_process(input_dir: str, output_dir: str = None, filter_name: str = DEF
     
     with ProcessPoolExecutor(max_workers=MAX_WORKERS) as executor:
         futures = {
-            executor.submit(process_single, str(f), str(input_dir), str(output_dir), filter_name): f
+            executor.submit(process_single, str(f), str(input_dir), str(output_dir), filter_name, skip_watermark): f
             for f in image_files
         }
         
@@ -253,12 +260,18 @@ def main():
         default=DEFAULT_FILTER,
         help=f'调色滤镜 (默认: {DEFAULT_FILTER})'
     )
+    parser.add_argument(
+        '--skip-watermark',
+        action='store_true',
+        help='跳过去水印步骤，直接对原图调色'
+    )
 
     args = parser.parse_args()
 
     input_dir = args.input_dir
     output_dir = args.output_dir
     filter_name = args.filter
+    skip_watermark = args.skip_watermark
 
     if not check_dependencies():
         sys.exit(1)
@@ -269,8 +282,10 @@ def main():
 
     # Log the selected filter
     logger.info(f"使用滤镜: {filter_name}")
+    if skip_watermark:
+        logger.info("跳过去水印步骤")
 
-    batch_process(input_dir, output_dir, filter_name)
+    batch_process(input_dir, output_dir, filter_name, skip_watermark)
 
 
 if __name__ == "__main__":
