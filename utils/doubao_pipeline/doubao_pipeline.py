@@ -91,12 +91,20 @@ def remove_watermark(input_path: str, output_path: str) -> bool:
         return False
 
 
-def apply_color_grade(input_path: str, output_path: str) -> bool:
-    """用 FFmpeg 调色"""
+def apply_color_grade(input_path: str, output_path: str, filter_name: str = DEFAULT_FILTER) -> bool:
+    """用 FFmpeg 调色
+
+    Args:
+        input_path: Input image path
+        output_path: Output image path
+        filter_name: Filter name from FILTERS dict (default: basic)
+    """
+    filter_str = FILTERS.get(filter_name, FILTERS[DEFAULT_FILTER])
+
     try:
         cmd = [
             "ffmpeg", "-y", "-i", input_path,
-            "-vf", FFMPEG_FILTER,
+            "-vf", filter_str,
             "-q:v", "2",  # JPEG 质量
             output_path
         ]
