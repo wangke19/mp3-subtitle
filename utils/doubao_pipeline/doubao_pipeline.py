@@ -60,7 +60,7 @@ def check_dependencies():
 
 
 def remove_watermark(input_path: str, output_path: str) -> bool:
-    """裁剪图片去除豆包水印（底部区域）"""
+    """使用模糊滤镜去除豆包水印（底部文字区域）"""
     try:
         # 获取图片尺寸
         probe = subprocess.run(
@@ -74,19 +74,33 @@ def remove_watermark(input_path: str, output_path: str) -> bool:
             width = int(info['streams'][0]['width'])
             height = int(info['streams'][0]['height'])
 
-            # 豆包水印在底部，裁掉底部 8% 的区域
-            crop_h = int(height * 0.08)
+            # 豆包水印在底部中间区域，定义水印区域
+            watermark_w = int(width * 0.35)
+            watermark_h = int(height * 0.06)
+            x = int((width - watermark_w) / 2)  # 居中
+            y = height - watermark_h - 10
 
-            logger.info(f"裁剪底部区域: {crop_h}px 去除水印")
+            logger.info(f"模糊水印区域: ({x},{y} 大小 {watermark_w}x{watermark_h})")
         else:
             # 默认值 (适用于 2048x2048)
-            width, height, crop_h = 2048, 2048, 160
-            logger.warning("无法获取图片尺寸，使用默认裁剪值")
+            width, height = 2048, 2048
+            watermark_w, watermark_h = 700, 120
+            x = int((width - watermark_w) / 2)
+            y = height - watermark_h - 10
+            logger.warning("无法获取图片尺寸，使用默认水印位置")
 
-        # 使用 crop 滤镜裁掉底部水印区域
+        # 使用 drawbox 覆盖 + boxblur 模糊水印区域
+        # 先用黑色覆盖，再模糊边缘融合
+        vf = (
+            f"drawbox=x={x}:y={y}:w={watermark_w}:h={watermark_h}:"
+            f"color=black@0.8:t=fill,"
+            f"boxblur=luma_radius=20:chroma_radius=20:"
+            f"luma_power=2:chroma_power=2"
+        )
+
         cmd = [
             "ffmpeg", "-y", "-i", input_path,
-            "-vf", f"crop={width}:{height-crop_h}:0:0",
+            "-vf", vf,
             "-q:v", "2",
             output_path
         ]
