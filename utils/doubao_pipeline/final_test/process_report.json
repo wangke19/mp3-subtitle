@@ -1,0 +1,16 @@
+{
+  "total": 1,
+  "success": 0,
+  "failed": 1,
+  "results": [
+    {
+      "file": "img10.jpg",
+      "status": "failed",
+      "watermark_removed": false,
+      "color_graded": false,
+      "output": null,
+      "error": "去水印失败"
+    }
+  ],
+  "timestamp": "2026-05-31T21:10:34.574190"
+}
