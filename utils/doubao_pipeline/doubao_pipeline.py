@@ -60,14 +60,26 @@ def check_dependencies():
 
 
 def remove_watermark(input_path: str, output_path: str) -> bool:
-    """使用 Python PIL 去除豆包水印"""
+    """调用 GeminiWatermarkTool 去除水印"""
+    cli_path = os.path.join(GEMINI_TOOL_PATH, "cli.py")
+    
+    if not os.path.exists(cli_path):
+        # fallback: 尝试直接从 pip 安装的版本
+        try:
+            result = subprocess.run(
+                ["gemini-watermark-tool", "--input", input_path, "--output", output_path],
+                capture_output=True, text=True, timeout=30
+            )
+            return result.returncode == 0
+        except:
+            pass
+        
+        logger.error(f"未找到 GeminiWatermarkTool: {cli_path}")
+        return False
+    
     try:
-        # 调用本地水印去除工具
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        wm_script = os.path.join(script_dir, "watermark_removal.py")
-
         result = subprocess.run(
-            ["python3", wm_script, input_path, output_path, "blur"],
+            ["python3", cli_path, "--input", input_path, "--output", output_path, "--mode", "auto"],
             capture_output=True, text=True, timeout=30
         )
         return result.returncode == 0

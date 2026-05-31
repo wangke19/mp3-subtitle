@@ -1,0 +1,16 @@
+{
+  "total": 1,
+  "success": 1,
+  "failed": 0,
+  "results": [
+    {
+      "file": "test.png",
+      "status": "success",
+      "watermark_removed": true,
+      "color_graded": true,
+      "output": "utils/doubao_pipeline/test_run_output/test_clean.png",
+      "error": null
+    }
+  ],
+  "timestamp": "2026-05-31T22:16:40.395444"
+}
