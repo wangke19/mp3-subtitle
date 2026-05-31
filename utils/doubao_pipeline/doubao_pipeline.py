@@ -60,7 +60,7 @@ def check_dependencies():
 
 
 def remove_watermark(input_path: str, output_path: str) -> bool:
-    """使用 FFmpeg delogo 滤镜去除豆包水印（右下角）"""
+    """裁剪图片去除豆包水印（底部区域）"""
     try:
         # 获取图片尺寸
         probe = subprocess.run(
@@ -74,24 +74,19 @@ def remove_watermark(input_path: str, output_path: str) -> bool:
             width = int(info['streams'][0]['width'])
             height = int(info['streams'][0]['height'])
 
-            # 豆包水印通常在右下角，覆盖约 10% 的底部区域
-            watermark_w = int(width * 0.15)
-            watermark_h = int(height * 0.08)
-            x = width - watermark_w - 10
-            y = height - watermark_h - 10
-            w = watermark_w
-            h = watermark_h
+            # 豆包水印在底部，裁掉底部 8% 的区域
+            crop_h = int(height * 0.08)
 
-            logger.info(f"检测到水印位置: 右下角 ({x},{y} 大小 {w}x{h})")
+            logger.info(f"裁剪底部区域: {crop_h}px 去除水印")
         else:
             # 默认值 (适用于 2048x2048)
-            x, y, w, h = 1800, 1800, 200, 200
-            logger.warning("无法获取图片尺寸，使用默认水印位置")
+            width, height, crop_h = 2048, 2048, 160
+            logger.warning("无法获取图片尺寸，使用默认裁剪值")
 
-        # 使用 delogo 滤镜去除水印
+        # 使用 crop 滤镜裁掉底部水印区域
         cmd = [
             "ffmpeg", "-y", "-i", input_path,
-            "-vf", f"delogo=x={x}:y={y}:w={w}:h={h}:show=0",
+            "-vf", f"crop={width}:{height-crop_h}:0:0",
             "-q:v", "2",
             output_path
         ]
