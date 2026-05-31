@@ -6,68 +6,48 @@
 
 import sys
 import numpy as np
-from PIL import Image, ImageFilter
+from PIL import Image, ImageFilter, ImageDraw
 from pathlib import Path
 
 
-def remove_watermark_doubao(input_path: str, output_path: str) -> bool:
-    """去除豆包水印 - 使用inpainting方法
-
-    Args:
-        input_path: 输入图片路径
-        output_path: 输出图片路径
-    """
+def remove_watermark_blur(input_path: str, output_path: str) -> bool:
+    """去除豆包水印 - 使用背景色覆盖 + 边缘模糊"""
     try:
         img = Image.open(input_path)
         width, height = img.size
 
-        # 豆包水印通常在底部中间区域
+        # 豆包水印在底部中间区域
         watermark_h = int(height * 0.06)
         watermark_w = int(width * 0.30)
         x = (width - watermark_w) // 2
         y = height - watermark_h - 10
 
-        print(f"检测到水印区域: ({x}, {y} 大小 {watermark_w}x{watermark_h})")
+        print(f"覆盖水印区域: ({x}, {y} 大小 {watermark_w}x{watermark_h})")
 
-        # 转换为numpy数组进行处理
-        img_array = np.array(img)
+        # 获取水印上方背景区域的平均颜色
+        bg_region = img.crop((x, y - 30, x + watermark_w, y))
+        bg_colors = list(bg_region.getdata())
 
-        # 提取水印区域
-        watermark_region = img_array[y:y+watermark_h, x:x+watermark_w]
+        # 计算平均RGB
+        if bg_colors:
+            avg_r = sum(c[0] for c in bg_colors) // len(bg_colors)
+            avg_g = sum(c[1] for c in bg_colors) // len(bg_colors)
+            avg_b = sum(c[2] for c in bg_colors) // len(bg_colors)
+            fill_color = (avg_r, avg_g, avg_b)
+        else:
+            fill_color = (255, 255, 255)  # 默认白色
 
-        # 简单inpainting: 使用周围区域的平均颜色填充
-        # 扩展采样区域（水印上下边缘）
-        border = 10
-        if y > border and y + watermark_h + border < height:
-            # 从上方取样
-            top_sample = img_array[y-border:y, x:x+watermark_w]
-            # 从下方取样
-            bottom_sample = img_array[y+watermark_h:y+watermark_h+border, x:x+watermark_w]
+        # 创建新的水印区域，填充背景色
+        watermark_region = Image.new('RGB', (watermark_w, watermark_h), fill_color)
 
-            # 计算平均颜色（垂直方向的渐变填充）
-            if len(top_sample) > 0 and len(bottom_sample) > 0:
-                for i in range(watermark_h):
-                    # 线性插值权重
-                    alpha = i / watermark_h
-                    # 上下区域平均
-                    top_avg = np.mean(top_sample[min(i, len(top_sample)-1)], axis=0)
-                    bottom_avg = np.mean(bottom_sample[min(i, len(bottom_sample)-1)], axis=0)
-                    # 混合
-                    fill_color = (1 - alpha) * top_avg + alpha * bottom_avg
+        # 对边缘区域做轻微模糊以融合
+        blurred_top = watermark_region.filter(ImageFilter.GaussianBlur(radius=3))
+        blurred_bottom = watermark_region.filter(ImageFilter.GaussianBlur(radius=3))
 
-                    # 填充到水印区域
-                    img_array[y+i:y+i+1, x:x+watermark_w] = fill_color
+        # 粘贴回原图
+        img.paste(blurred_top, (x, y))
 
-        # 转回PIL图像
-        result_img = Image.fromarray(img_array.astype(np.uint8))
-
-        # 轻微模糊处理使填充更自然
-        blurred_region = result_img.crop((x, y, x + watermark_w, y + watermark_h))
-        blurred_region = blurred_region.filter(ImageFilter.SMOOTH)
-        result_img.paste(blurred_region, (x, y))
-
-        # 保存
-        result_img.save(output_path, quality=95)
+        img.save(output_path, quality=95)
         print(f"✅ 去水印完成: {output_path}")
         return True
 
@@ -97,12 +77,12 @@ def remove_watermark_crop(input_path: str, output_path: str) -> bool:
 def main():
     if len(sys.argv) < 3:
         print("用法: python3 watermark_removal.py <输入图片> <输出图片> [方法]")
-        print("方法: inpaint (默认, 智能修复) | crop (裁剪底部)")
+        print("方法: blur (默认, 强力模糊) | crop (裁剪底部)")
         sys.exit(1)
 
     input_path = sys.argv[1]
     output_path = sys.argv[2]
-    method = sys.argv[3] if len(sys.argv) > 3 else "inpaint"
+    method = sys.argv[3] if len(sys.argv) > 3 else "blur"
 
     if not Path(input_path).exists():
         print(f"输入文件不存在: {input_path}")
@@ -111,7 +91,7 @@ def main():
     if method == "crop":
         success = remove_watermark_crop(input_path, output_path)
     else:
-        success = remove_watermark_doubao(input_path, output_path)
+        success = remove_watermark_blur(input_path, output_path)
 
     sys.exit(0 if success else 1)
 
