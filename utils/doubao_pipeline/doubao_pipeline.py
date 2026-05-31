@@ -60,43 +60,28 @@ def check_dependencies():
 
 
 def remove_watermark(input_path: str, output_path: str) -> bool:
-    """使用黑色覆盖去除豆包水印"""
+    """调用 GeminiWatermarkTool 去除水印"""
+    cli_path = os.path.join(GEMINI_TOOL_PATH, "cli.py")
+    
+    if not os.path.exists(cli_path):
+        # fallback: 尝试直接从 pip 安装的版本
+        try:
+            result = subprocess.run(
+                ["gemini-watermark-tool", "--input", input_path, "--output", output_path],
+                capture_output=True, text=True, timeout=30
+            )
+            return result.returncode == 0
+        except:
+            pass
+        
+        logger.error(f"未找到 GeminiWatermarkTool: {cli_path}")
+        return False
+    
     try:
-        # 获取图片尺寸
-        probe = subprocess.run(
-            ["ffprobe", "-v", "quiet", "-print_format", "json",
-             "-show_format", "-show_streams", input_path],
-            capture_output=True, text=True, timeout=10
+        result = subprocess.run(
+            ["python3", cli_path, "--input", input_path, "--output", output_path, "--mode", "auto"],
+            capture_output=True, text=True, timeout=30
         )
-        if probe.returncode == 0:
-            import json
-            info = json.loads(probe.stdout)
-            width = int(info['streams'][0]['width'])
-            height = int(info['streams'][0]['height'])
-
-            # 豆包水印在底部中间区域
-            watermark_w = int(width * 0.35)
-            watermark_h = int(height * 0.06)
-            x = int((width - watermark_w) / 2)  # 居中
-            y = height - watermark_h - 10
-
-            logger.info(f"覆盖水印区域: ({x},{y} 大小 {watermark_w}x{watermark_h})")
-        else:
-            # 默认值 (适用于 2048x2048)
-            width, height = 2048, 2048
-            watermark_w, watermark_h = 700, 120
-            x = int((width - watermark_w) / 2)
-            y = height - watermark_h - 10
-            logger.warning("无法获取图片尺寸，使用默认水印位置")
-
-        # 直接用黑色矩形覆盖水印区域
-        cmd = [
-            "ffmpeg", "-y", "-i", input_path,
-            "-vf", f"drawbox=x={x}:y={y}:w={watermark_w}:h={watermark_h}:color=black:t=fill",
-            "-q:v", "2",
-            output_path
-        ]
-        result = subprocess.run(cmd, capture_output=True, timeout=30)
         return result.returncode == 0
     except subprocess.TimeoutExpired:
         logger.error(f"去水印超时: {input_path}")
