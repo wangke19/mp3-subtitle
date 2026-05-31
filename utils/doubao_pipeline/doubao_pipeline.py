@@ -118,8 +118,15 @@ def apply_color_grade(input_path: str, output_path: str, filter_name: str = DEFA
         return False
 
 
-def process_single(image_path: str, input_dir: str, output_dir: str) -> dict:
-    """处理单张图片：去水印 → 调色"""
+def process_single(image_path: str, input_dir: str, output_dir: str, filter_name: str = DEFAULT_FILTER) -> dict:
+    """处理单张图片：去水印 → 调色
+
+    Args:
+        image_path: Input image path
+        input_dir: Input directory path
+        output_dir: Output directory path
+        filter_name: Filter name to apply (default: basic)
+    """
     filename = Path(image_path).name
     stem = Path(image_path).stem
     ext = Path(image_path).suffix.lower()
@@ -145,7 +152,7 @@ def process_single(image_path: str, input_dir: str, output_dir: str) -> dict:
         result["watermark_removed"] = True
         
         # Step 2: 调色
-        if not apply_color_grade(temp_wm, final_path):
+        if not apply_color_grade(temp_wm, final_path, filter_name):
             raise Exception("调色失败")
         result["color_graded"] = True
         
